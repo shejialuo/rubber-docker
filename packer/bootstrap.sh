@@ -42,7 +42,7 @@ EOF
 # restart docker (to use overlay)
 systemctl restart docker
 
-usermod -G docker -a ubuntu
+usermod -G docker -a root
 
 # Clone git repo
 mkdir /workshop
