@@ -2,6 +2,7 @@ from __future__ import print_function
 
 import os
 import tarfile
+import stat
 import uuid
 
 import click
@@ -63,6 +64,16 @@ def contain(command, image_name, image_dir, container_id, container_dir):
 
     new_root_path = create_container_root(image_name, image_dir, container_id, container_dir)
 
+    linux.unshare(linux.CLONE_NEWNS)
+
+    # (https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
+    # Make / a private mount to avoid littering our host mount table.
+    # Use `man mount_namespaces`
+    # MS_PRIVATE: This mount is private; it does not have a peer group. Mount
+    #             and unmount events do not propagate into or out of this mount.
+    # MS_REC: We need to recursive does this.
+    linux.mount(None, '/', None, linux.MS_PRIVATE | linux.MS_REC, None)
+
     # We should mount `proc`, `sys` and recursive mount `/dev`.
     # This is like the way as the command line.
     # We could use `cat /proc/filesystems` to see the virtual
@@ -78,6 +89,23 @@ def contain(command, image_name, image_dir, container_id, container_dir):
         linux.mount('devpts', devpts_path, 'devpts', 0, '')
     for i, dev in enumerate(['stdin', 'stdout', 'stderr']):
         os.symlink('/proc/self/fd/%d' % i, os.path.join(new_root_path, 'dev', dev))
+
+    # A device ID consists of two parts: a major ID, identifying the class of the
+    # device, and a minor ID, identifying a specific instance of a device in
+    # that class. We could use `ls -l` to see the major and minor ID.
+    devices = [
+      {'name': 'null', 'major': 1, 'minor': 3},
+      {'name': 'zero', 'major': 1, 'minor': 5},
+      {'name': 'random', 'major': 1, 'minor': 8},
+      {'name': 'urandom', 'major': 1, 'minor': 9},
+      {'name': 'console', 'major': 5, 'minor': 1},
+      {'name': 'tty', 'major': 5, 'minor': 0},
+      {'name': 'full', 'major': 1, 'minor': 7},
+    ]
+    dev_path = os.path.join(new_root_path, 'dev')
+    for device in devices:
+        device_id = os.makedev(device['major'], device['minor'])
+        os.mknod(os.path.join(dev_path, device['name']), 0o666 | stat.S_IFCHR, device_id)
 
     os.chroot(new_root_path)
     # After `os.chroot`, the working diretcory would be corrupted.
