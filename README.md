@@ -19,3 +19,8 @@ Next, you should configure the proxy. And execute the following command.
 ```sh
 sudo bash packer/bootstrap.sh
 ```
+
+---
+
+This workshop may seem easy. However, it provides a basic understanding how
+docker works internal. Thanks all the efforts of the authors.
