@@ -111,13 +111,53 @@ def make_dev(new_root_path):
         device_id = os.makedev(device['major'], device['minor'])
         os.mknod(os.path.join(dev_path, device['name']), 0o666 | stat.S_IFCHR, device_id)
 
+def setup_cpu_cgroup(container_id, cpu_shares):
+    CPU_CGROUP_BASEDIR = '/sys/fs/cgroup/cpu'
+    container_cpu_cgroup_dir = os.path.join(
+        CPU_CGROUP_BASEDIR, 'rubber_docker', container_id)
+
+    # Insert the container to new cpu cgroup named 'rubber_docker/container_id'
+    if not os.path.exists(container_cpu_cgroup_dir):
+        os.makedirs(container_cpu_cgroup_dir)
+    tasks_file = os.path.join(container_cpu_cgroup_dir, 'tasks')
+    open(tasks_file, 'w').write(str(os.getpid()))
+
+    # If (cpu_shares != 0)  => set the 'cpu.shares' in our cpu cgroup
+    if cpu_shares:
+        cpu_shares_file = os.path.join(container_cpu_cgroup_dir, 'cpu.shares')
+        open(cpu_shares_file, 'w').write(str(cpu_shares))
+
+
+def setup_memory_cgroup(container_id, memory, memory_swap):
+    MEMORY_CGROUP_BASEDIR = '/sys/fs/cgroup/memory'
+    container_mem_cgroup_dir = os.path.join(
+        MEMORY_CGROUP_BASEDIR, 'rubber_docker', container_id)
+
+    # Insert the container to new memory cgroup named 'rubber_docker/container_id'
+    if not os.path.exists(container_mem_cgroup_dir):
+        os.makedirs(container_mem_cgroup_dir)
+    tasks_file = os.path.join(container_mem_cgroup_dir, 'tasks')
+    open(tasks_file, 'w').write(str(os.getpid()))
+
+    if memory is not None:
+        mem_limit_in_bytes_file = os.path.join(
+            container_mem_cgroup_dir, 'memory.limit_in_bytes')
+        open(mem_limit_in_bytes_file, 'w').write(str(memory))
+    if memory_swap is not None:
+        memsw_limit_in_bytes_file = os.path.join(
+            container_mem_cgroup_dir, 'memory.memsw.limit_in_bytes')
+        open(memsw_limit_in_bytes_file, 'w').write(str(memory_swap))
 
 @click.group()
 def cli():
     pass
 
 
-def contain(command, image_name, image_dir, container_id, container_dir):
+def contain(command, image_name, image_dir, container_id, container_dir,
+            cpu_shares, memory, memory_swap, user):
+
+    setup_cpu_cgroup(container_id, cpu_shares)
+    setup_memory_cgroup(container_id, memory, memory_swap)
 
     new_root_path = create_container_root(image_name, image_dir, container_id, container_dir)
 
@@ -150,17 +190,29 @@ def contain(command, image_name, image_dir, container_id, container_dir):
 
 
 @cli.command(context_settings=dict(ignore_unknown_options=True,))
+@click.option('--memory',
+              help='Memory limit in bytes.'
+              ' Use suffixes to represent larger units (k, m, g)',
+              default=None)
+@click.option('--memory-swap',
+              help='A positive integer equal to memory plus swap.'
+              ' Specify -1 to enable unlimited swap.',
+              default=None)
+@click.option('--cpu-shares', help='CPU shares (relative weight)', default=0)
+@click.option('--user', help='UID (format: <uid>[:<gid>])', default='')
 @click.option('--image-name', '-i', help='Image name', default='ubuntu')
 @click.option('--image-dir', help='Images directory',
               default='/workshop/images')
 @click.option('--container-dir', help='Containers directory',
               default='/workshop/containers')
 @click.argument('Command', required=True, nargs=-1)
-def run(image_name, image_dir, container_dir, command):
+def run(memory, memory_swap, cpu_shares, user,
+        image_name, image_dir, container_dir, command):
     container_id = str(uuid.uuid4())
 
-    flags = linux.CLONE_NEWNS | linux.CLONE_NEWUTS | linux.CLONE_NEWPID
-    contain_args = (command, image_name, image_dir, container_id, container_dir)
+    flags = linux.CLONE_NEWNS | linux.CLONE_NEWUTS | linux.CLONE_NEWPID | linux.CLONE_NEWNET
+    contain_args = (command, image_name, image_dir, container_id,
+                     container_dir, cpu_shares, memory, memory_swap, user)
     pid = linux.clone(contain, flags, contain_args)
 
     # This is the parent, pid contains the PID of the forked process
