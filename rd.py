@@ -121,8 +121,6 @@ def contain(command, image_name, image_dir, container_id, container_dir):
 
     new_root_path = create_container_root(image_name, image_dir, container_id, container_dir)
 
-    linux.unshare(linux.CLONE_NEWNS)
-    linux.unshare(linux.CLONE_NEWUTS)
     linux.sethostname(container_id)
 
     # (https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
@@ -139,7 +137,7 @@ def contain(command, image_name, image_dir, container_id, container_dir):
     old_root_path = os.path.join(new_root_path, '.pivot_root')
     os.makedirs(old_root_path)
     linux.pivot_root(new_root_path, old_root_path)
-    # After `pivot_root`, the working diretcory would be corrupted.
+    # After `pivot_root`, the working directory would be corrupted.
     # So we should use `os.chdir`to change the working directory
     os.chdir('/')
 
@@ -160,15 +158,10 @@ def contain(command, image_name, image_dir, container_id, container_dir):
 @click.argument('Command', required=True, nargs=-1)
 def run(image_name, image_dir, container_dir, command):
     container_id = str(uuid.uuid4())
-    pid = os.fork()
-    if pid == 0:
-        # This is the child, we'll try to do some containment here
-        try:
-            contain(command, image_name, image_dir, container_id,
-                    container_dir)
-        except Exception:
-            traceback.print_exc()
-            os._exit(1)  # something went wrong in contain()
+
+    flags = linux.CLONE_NEWNS | linux.CLONE_NEWUTS | linux.CLONE_NEWPID
+    contain_args = (command, image_name, image_dir, container_id, container_dir)
+    pid = linux.clone(contain, flags, contain_args)
 
     # This is the parent, pid contains the PID of the forked process
     # wait for the forked child, fetch the exit status
