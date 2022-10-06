@@ -1,3 +1,5 @@
+#!/usr/bin/env python2.7
+
 from __future__ import print_function
 
 import os
@@ -24,7 +26,7 @@ def _get_container_path(container_id, container_dir, *subdir_names):
 
 
 def create_container_root(image_name, image_dir, container_id, container_dir):
-    """Create a container root by extracting an image into a new directory
+    """
 
     Usage:
     new_root = create_container_root(
@@ -39,46 +41,42 @@ def create_container_root(image_name, image_dir, container_id, container_dir):
     @rtype: str
     """
     image_path = _get_image_path(image_name, image_dir)
-    container_root = _get_container_path(container_id, container_dir, 'rootfs')
-
+    image_root_path = os.path.join(image_dir, image_name, 'rootfs')
     assert os.path.exists(image_path), "unable to locate image %s" % image_name
 
-    if not os.path.exists(container_root):
-        os.makedirs(container_root)
+    # Instead of extracting the image every time, we should store
+    # it in the overlay filesystem.
+    if not os.path.exists(image_root_path):
+        os.makedirs(image_root_path)
+        with tarfile.open(image_path) as t:
+            # Fun fact: tar files may contain *nix devices! *facepalm*
+            members = [m for m in t.getmembers()
+                       if m.type not in (tarfile.CHRTYPE, tarfile.BLKTYPE)]
+            t.extractall(image_root_path, members=members)
 
-    # Here, we need to change the mount type because `pivot_root`
-    # needs two different type filesystem
-    # TODO: Remove after adding overlay support
-    linux.mount('tmpfs', container_root, 'tmpfs', 0, None)
+    # Create directories for copy-on-write (uppperdir), overlay workdir
+    # See https://www.kernel.org/doc/Documentation/filesystems/overlayfs.txt
+    container_cow_rw = _get_container_path(
+        container_id, container_dir, 'cow_rw')
+    container_cow_workdir = _get_container_path(
+        container_id, container_dir, 'cow_workdir')
+    container_rootfs = _get_container_path(
+        container_id, container_dir, 'rootfs')
+    for d in (container_cow_rw, container_cow_workdir, container_rootfs):
+        if not os.path.exists(d):
+            os.makedirs(d)
 
-    with tarfile.open(image_path) as t:
-        # Fun fact: tar files may contain *nix devices! *facepalm*
-        members = [m for m in t.getmembers()
-                   if m.type not in (tarfile.CHRTYPE, tarfile.BLKTYPE)]
-        t.extractall(container_root, members=members)
+    # Here, we use kernel support for overlay. Well, we just use it...
+    linux.mount(
+        'overlay', container_rootfs, 'overlay', linux.MS_NODEV,
+        "lowerdir={image_root},upperdir={cow_rw},workdir={cow_workdir}".format(
+            image_root=image_root_path,
+            cow_rw=container_cow_rw,
+            cow_workdir=container_cow_workdir))
 
-    return container_root
+    return container_rootfs  # return the mountpoint for the mounted overlayfs
 
-
-@click.group()
-def cli():
-    pass
-
-
-def contain(command, image_name, image_dir, container_id, container_dir):
-
-    new_root_path = create_container_root(image_name, image_dir, container_id, container_dir)
-
-    linux.unshare(linux.CLONE_NEWNS)
-
-    # (https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
-    # Make / a private mount to avoid littering our host mount table.
-    # Use `man mount_namespaces`
-    # MS_PRIVATE: This mount is private; it does not have a peer group. Mount
-    #             and unmount events do not propagate into or out of this mount.
-    # MS_REC: We need to recursive does this.
-    linux.mount(None, '/', None, linux.MS_PRIVATE | linux.MS_REC, None)
-
+def create_mounts(new_root_path):
     # We should mount `proc`, `sys` and recursive mount `/dev`.
     # This is like the way as the command line.
     # We could use `cat /proc/filesystems` to see the virtual
@@ -88,6 +86,7 @@ def contain(command, image_name, image_dir, container_id, container_dir):
     linux.mount('tmpfs', os.path.join(new_root_path, 'dev'), 'tmpfs',
                 linux.MS_NOSUID | linux.MS_STRICTATIME, 'mode=755')
 
+def make_dev(new_root_path):
     devpts_path = os.path.join(new_root_path, 'dev', 'pts')
     if not os.path.exists(devpts_path):
         os.makedirs(devpts_path)
@@ -111,6 +110,29 @@ def contain(command, image_name, image_dir, container_id, container_dir):
     for device in devices:
         device_id = os.makedev(device['major'], device['minor'])
         os.mknod(os.path.join(dev_path, device['name']), 0o666 | stat.S_IFCHR, device_id)
+
+
+@click.group()
+def cli():
+    pass
+
+
+def contain(command, image_name, image_dir, container_id, container_dir):
+
+    new_root_path = create_container_root(image_name, image_dir, container_id, container_dir)
+
+    linux.unshare(linux.CLONE_NEWNS)
+
+    # (https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
+    # Make / a private mount to avoid littering our host mount table.
+    # Use `man mount_namespaces`
+    # MS_PRIVATE: This mount is private; it does not have a peer group. Mount
+    #             and unmount events do not propagate into or out of this mount.
+    # MS_REC: We need to recursive does this.
+    linux.mount(None, '/', None, linux.MS_PRIVATE | linux.MS_REC, None)
+
+    create_mounts(new_root_path)
+    make_dev(new_root_path)
 
     old_root_path = os.path.join(new_root_path, '.pivot_root')
     os.makedirs(old_root_path)
