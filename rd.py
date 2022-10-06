@@ -46,6 +46,11 @@ def create_container_root(image_name, image_dir, container_id, container_dir):
     if not os.path.exists(container_root):
         os.makedirs(container_root)
 
+    # Here, we need to change the mount type because `pivot_root`
+    # needs two different type filesystem
+    # TODO: Remove after adding overlay support
+    linux.mount('tmpfs', container_root, 'tmpfs', 0, None)
+
     with tarfile.open(image_path) as t:
         # Fun fact: tar files may contain *nix devices! *facepalm*
         members = [m for m in t.getmembers()
@@ -107,10 +112,17 @@ def contain(command, image_name, image_dir, container_id, container_dir):
         device_id = os.makedev(device['major'], device['minor'])
         os.mknod(os.path.join(dev_path, device['name']), 0o666 | stat.S_IFCHR, device_id)
 
-    os.chroot(new_root_path)
-    # After `os.chroot`, the working diretcory would be corrupted.
+    old_root_path = os.path.join(new_root_path, '.pivot_root')
+    os.makedirs(old_root_path)
+    linux.pivot_root(new_root_path, old_root_path)
+    # After `pivot_root`, the working diretcory would be corrupted.
     # So we should use `os.chdir`to change the working directory
     os.chdir('/')
+
+    # Now `old_root_path` should be changed to `./.pivot_root`
+    old_root_path = './.pivot_root'
+    linux.umount2(old_root_path, linux.MNT_DETACH)
+    os.rmdir(old_root_path)
 
     os.execvp(command[0], command)
 
