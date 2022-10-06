@@ -122,6 +122,8 @@ def contain(command, image_name, image_dir, container_id, container_dir):
     new_root_path = create_container_root(image_name, image_dir, container_id, container_dir)
 
     linux.unshare(linux.CLONE_NEWNS)
+    linux.unshare(linux.CLONE_NEWUTS)
+    linux.sethostname(container_id)
 
     # (https://www.kernel.org/doc/Documentation/filesystems/sharedsubtree.txt)
     # Make / a private mount to avoid littering our host mount table.
